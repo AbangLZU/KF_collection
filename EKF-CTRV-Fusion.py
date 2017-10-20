@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy as np
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -12,7 +13,7 @@ dataset = []
 
 # read the measurement data, use 0.0 to stand LIDAR data
 # and 1.0 stand RADAR data
-with open('obj-tracking-laser-radar-input.txt', 'rb') as f:
+with open('data_synthetic.txt', 'rb') as f:
     lines = f.readlines()
     for line in lines:
         line = line.strip('\n')
@@ -31,7 +32,7 @@ with open('obj-tracking-laser-radar-input.txt', 'rb') as f:
         dataset.append(result)
     f.close()
 
-P = np.diag([1.0, 1.0, 1.0, 1.0, 1.0])
+P = np.diag([1.0, 1.0, 1000.0, 1000.0, 1000.0])
 print(P, P.shape)
 H_lidar = np.array([[ 1.,  0.,  0.,  0.,  0.],
        [ 0.,  1.,  0.,  0.,  0.]])
@@ -54,15 +55,15 @@ print(R_radar, R_radar.shape)
 # process noise standard deviation for a
 std_noise_a = 2.0
 # process noise standard deviation for yaw acceleration
-std_noise_yaw_dd = 0.7
+std_noise_yaw_dd = 0.3
 
 
 def control_psi(psi):
-    while (psi > 2 * math.pi or psi < -2 * math.pi):
-        if psi > 2 * math.pi:
-            psi = psi - 2 * math.pi
-        if psi < -2 * math.pi:
-            psi = psi + 2 * math.pi
+    while (psi > 2 * np.pi or psi < -2 * np.pi):
+        if psi > 2 * np.pi:
+            psi = psi - 2 * np.pi
+        if psi < -2 * np.pi:
+            psi = psi + 2 * np.pi
     return psi
 
 
@@ -103,8 +104,8 @@ my = []
 def savestates(ss, gx, gy, gv1, gv2, m1, m2):
     px.append(ss[0])
     py.append(ss[1])
-    vx.append(math.cos(ss[3]) * ss[2])
-    vy.append(math.sin(ss[3]) * ss[2])
+    vx.append(np.cos(ss[3]) * ss[2])
+    vy.append(np.sin(ss[3]) * ss[2])
 
     gpx.append(gx)
     gpy.append(gy)
@@ -128,8 +129,8 @@ transition_function = lambda y: np.vstack((
     y[4]))
 
 # when omega is 0
-transition_function_1 = lambda y: np.vstack((y[0] + y[2] * math.cos(y[3]) * dt,
-                                             y[1] + y[2] * math.sin(y[3]) * dt,
+transition_function_1 = lambda y: np.vstack((y[0] + y[2] * np.cos(y[3]) * dt,
+                                             y[1] + y[2] * np.sin(y[3]) * dt,
                                              y[2],
                                              y[3] + y[4] * dt,
                                              y[4]))
@@ -138,9 +139,9 @@ J_A = nd.Jacobian(transition_function)
 J_A_1 = nd.Jacobian(transition_function_1)
 # print(J_A([1., 2., 3., 4., 5.]))
 
-measurement_function = lambda k: np.vstack((math.sqrt(k[0] ** 2 + k[1] ** 2),
+measurement_function = lambda k: np.vstack((np.sqrt(k[0] * k[0] + k[1] * k[1]),
                                             math.atan2(k[1], k[0]),
-                                            (k[0] * k[2] + k[1] * k[2]) / math.sqrt(k[0] ** 2 + k[1] ** 2)))
+                                            (k[0] * k[2] * np.cos(k[3]) + k[1] * k[2] * np.sin(k[3])) / np.sqrt(k[0] * k[0] + k[1] * k[1])))
 J_H = nd.Jacobian(measurement_function)
 # J_H([1., 2., 3., 4., 5.])
 
@@ -154,6 +155,9 @@ for step in range(1, measurement_step):
         m_y = t_measurement[2]
         z = np.array([[m_x], [m_y]])
 
+        dt = (t_measurement[3] - current_time) / 1000000.0
+        current_time = t_measurement[3]
+
         # true position
         g_x = t_measurement[4]
         g_y = t_measurement[5]
@@ -165,6 +169,9 @@ for step in range(1, measurement_step):
         m_psi = t_measurement[2]
         m_dot_rho = t_measurement[3]
         z = np.array([[m_rho], [m_psi], [m_dot_rho]])
+
+        dt = (t_measurement[4] - current_time) / 1000000.0
+        current_time = t_measurement[4]
 
         # true position
         g_x = t_measurement[5]
@@ -183,14 +190,24 @@ for step in range(1, measurement_step):
     if np.abs(state[-1, -1]) < 0.0001:  # omega is 0, Driving straight
         state = transition_function_1(state.ravel().tolist())
         state[3, 0] = control_psi(state[3, 0])
-        JA = J_A_1(state.reshape([5]))
+        JA = J_A_1(state.ravel().tolist())
     else:  # otherwise
         state = transition_function(state.ravel().tolist())
         state[3, 0] = control_psi(state[3, 0])
-        JA = J_A(state.reshape([5]))
+        JA = J_A(state.ravel().tolist())
+
+    G = np.zeros([5, 2])
+    G[0, 0] = 0.5 * dt * dt * np.cos(state[3, 0])
+    G[1, 0] = 0.5 * dt * dt * np.sin(state[3, 0])
+    G[2, 0] = dt
+    G[3, 1] = 0.5 * dt * dt
+    G[4, 1] = dt
+
+    Q_v = np.diag([std_noise_a*std_noise_a, std_noise_yaw_dd*std_noise_yaw_dd])
+    Q = np.dot(np.dot(G, Q_v), G.T)
 
     # Project the error covariance ahead
-    P = np.dot(np.dot(JA, P), JA.T)
+    P = np.dot(np.dot(JA, P), JA.T) + Q
 
     # Measurement Update (Correction)
     # ===============================
@@ -204,25 +221,25 @@ for step in range(1, measurement_step):
         # Update the error covariance
         P = np.dot((I - np.dot(K, H_lidar)), P)
 
+        # Save states for Plotting
+        savestates(state.ravel().tolist(), g_x, g_y, g_v_x, g_v_y, m_x, m_y)
+
     else:
         # Radar
         JH = J_H(state.ravel().tolist())
+
         S = np.dot(np.dot(JH, P), JH.T) + R_radar
         K = np.dot(np.dot(P, JH.T), np.linalg.inv(S))
-        y = z - np.dot(JH, state)
+        y = z - measurement_function(state.ravel().tolist())
         state = state + np.dot(K, y)
         state[3, 0] = control_psi(state[3, 0])
         # Update the error covariance
         P = np.dot((I - np.dot(K, JH)), P)
 
-    if t_measurement[0] == 0.0:
-        # Save states for Plotting
-        savestates(state.ravel().tolist(), g_x, g_y, g_v_x, g_v_y, m_x, m_y)
-    else:
         savestates(state.ravel().tolist(), g_x, g_y, g_v_x, g_v_y, m_rho * np.cos(m_psi), m_rho * np.sin(m_psi))
 
 def rmse(estimates, actual):
-    result = np.mean((estimates - actual)**2)
+    result = np.sqrt(np.mean((estimates-actual)**2))
     return result
 
 print(rmse(np.array(px), np.array(gpx)),
@@ -235,65 +252,3 @@ stack = [px, py, vx, vy, mx, my, gpx, gpy, gvx, gvy]
 stack = np.array(stack)
 stack = stack.T
 np.savetxt('output.csv', stack, '%.6f')
-
-# import plotly.offline as py
-# from plotly.graph_objs import *
-# import pandas as pd
-# import math
-#
-# py.init_notebook_mode()
-#
-# my_cols = ['px_est', 'py_est', 'vx_est', 'vy_est', 'px_meas', 'py_meas', 'px_gt', 'py_gt', 'vx_gt', 'vy_gt']
-# with open('output.csv') as f:
-#     table_ekf_output = pd.read_table(f, sep='\t', header=None, names=my_cols, lineterminator='\n')
-#
-# # table_ekf_output
-#
-# import plotly.offline as py
-# from plotly.graph_objs import *
-#
-# # estimations
-# trace1 = Scatter(
-#     x=table_ekf_output['px_est'],
-#     y=table_ekf_output['py_est'],
-#     xaxis='x2',
-#     yaxis='y2',
-#     name='KF- Estimate'
-# )
-#
-# # Measurements
-# trace2 = Scatter(
-#     x=table_ekf_output['px_meas'],
-#     y=table_ekf_output['py_meas'],
-#     xaxis='x2',
-#     yaxis='y2',
-#     name='Measurements',
-#     mode='markers'
-# )
-#
-# # Measurements
-# trace3 = Scatter(
-#     x=table_ekf_output['px_gt'],
-#     y=table_ekf_output['py_gt'],
-#     xaxis='x2',
-#     yaxis='y2',
-#     name='Ground Truth'
-# )
-#
-# data = [trace1, trace2, trace3]
-#
-# layout = Layout(
-#     xaxis2=dict(
-#
-#         anchor='x2',
-#         title='px'
-#     ),
-#     yaxis2=dict(
-#
-#         anchor='y2',
-#         title='py'
-#     )
-# )
-#
-# fig = Figure(data=data, layout=layout)
-# py.plot(fig, filename='EKF')
