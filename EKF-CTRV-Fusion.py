@@ -32,7 +32,7 @@ with open('data_synthetic.txt', 'rb') as f:
         dataset.append(result)
     f.close()
 
-P = np.diag([1.0, 1.0, 1000.0, 1000.0, 1000.0])
+P = np.diag([1.0, 1.0, 1.0, 1.0, 1.0])
 print(P, P.shape)
 H_lidar = np.array([[ 1.,  0.,  0.,  0.,  0.],
        [ 0.,  1.,  0.,  0.,  0.]])
@@ -43,15 +43,6 @@ R_radar = np.array([[0.09, 0., 0.],[0., 0.0009, 0.], [0., 0., 0.09]])
 print(R_lidar, R_lidar.shape)
 print(R_radar, R_radar.shape)
 
-# dts = 0.05
-# sXy     = 0.5*6*dts**2  # assume 8.8m/s2 as maximum acceleration, forcing the vehicle
-# sCourse  = 0.1*dts # assume 0.1rad/s as maximum turn rate for the vehicle
-# sVelocity= 8.8*dts # assume 8.8m/s2 as maximum acceleration, forcing the vehicle
-# sYaw     = 1.0*dts # assume 1.0rad/s2 as the maximum turn rate acceleration for the vehicle
-
-# Q = np.diag([sXy**2, sXy**2, sVelocity**2, sCourse**2, sYaw**2])
-# print(Q, Q.shape)
-
 # process noise standard deviation for a
 std_noise_a = 2.0
 # process noise standard deviation for yaw acceleration
@@ -59,13 +50,12 @@ std_noise_yaw_dd = 0.3
 
 
 def control_psi(psi):
-    while (psi > 2 * np.pi or psi < -2 * np.pi):
-        if psi > 2 * np.pi:
+    while (psi > np.pi or psi < -np.pi):
+        if psi > np.pi:
             psi = psi - 2 * np.pi
-        if psi < -2 * np.pi:
+        if psi < -np.pi:
             psi = psi + 2 * np.pi
     return psi
-
 
 state = np.zeros(5)
 init_measurement = dataset[0]
@@ -129,11 +119,11 @@ transition_function = lambda y: np.vstack((
     y[4]))
 
 # when omega is 0
-transition_function_1 = lambda y: np.vstack((y[0] + y[2] * np.cos(y[3]) * dt,
-                                             y[1] + y[2] * np.sin(y[3]) * dt,
-                                             y[2],
-                                             y[3] + y[4] * dt,
-                                             y[4]))
+transition_function_1 = lambda m: np.vstack((m[0] + m[2] * np.cos(m[3]) * dt,
+                                             m[1] + m[2] * np.sin(m[3]) * dt,
+                                             m[2],
+                                             m[3] + m[4] * dt,
+                                             m[4]))
 
 J_A = nd.Jacobian(transition_function)
 J_A_1 = nd.Jacobian(transition_function_1)
@@ -187,7 +177,7 @@ for step in range(1, measurement_step):
 
     #     print(Q)
 
-    if np.abs(state[-1, -1]) < 0.0001:  # omega is 0, Driving straight
+    if np.abs(state[4, 0]) < 0.0001:  # omega is 0, Driving straight
         state = transition_function_1(state.ravel().tolist())
         state[3, 0] = control_psi(state[3, 0])
         JA = J_A_1(state.ravel().tolist())
@@ -195,6 +185,7 @@ for step in range(1, measurement_step):
         state = transition_function(state.ravel().tolist())
         state[3, 0] = control_psi(state[3, 0])
         JA = J_A(state.ravel().tolist())
+
 
     G = np.zeros([5, 2])
     G[0, 0] = 0.5 * dt * dt * np.cos(state[3, 0])
@@ -215,7 +206,9 @@ for step in range(1, measurement_step):
         # Lidar
         S = np.dot(np.dot(H_lidar, P), H_lidar.T) + R_lidar
         K = np.dot(np.dot(P, H_lidar.T), np.linalg.inv(S))
+
         y = z - np.dot(H_lidar, state)
+        y[1, 0] = control_psi(y[1, 0])
         state = state + np.dot(K, y)
         state[3, 0] = control_psi(state[3, 0])
         # Update the error covariance
@@ -230,7 +223,14 @@ for step in range(1, measurement_step):
 
         S = np.dot(np.dot(JH, P), JH.T) + R_radar
         K = np.dot(np.dot(P, JH.T), np.linalg.inv(S))
-        y = z - measurement_function(state.ravel().tolist())
+        map_pred = measurement_function(state.ravel().tolist())
+        if np.abs(map_pred[0, 0]) < 0.0001:
+            # if rho is 0
+            map_pred[2, 0] = 0
+
+        y = z - map_pred
+        y[1, 0] = control_psi(y[1, 0])
+
         state = state + np.dot(K, y)
         state[3, 0] = control_psi(state[3, 0])
         # Update the error covariance
